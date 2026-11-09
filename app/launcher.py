@@ -12,7 +12,7 @@ import uvicorn
 
 async def run_all():
     init_db()
-    config=uvicorn.Config(app,host=os.getenv('HOST','127.0.0.1'),port=int(os.getenv('PORT','8093')),log_level='info')
+    config=uvicorn.Config(app,host=os.getenv('HOST','0.0.0.0'),port=int(os.getenv('PORT','8093')),log_level='info')
     jobs=[asyncio.create_task(uvicorn.Server(config).serve(),name='web')]
     if os.getenv('ENABLE_COLLECTOR','true').lower()=='true':jobs.append(asyncio.create_task(collect(),name='collector'))
     if os.getenv('ENABLE_BOT','false').lower()=='true':jobs.append(asyncio.create_task(bot(),name='bot'))
