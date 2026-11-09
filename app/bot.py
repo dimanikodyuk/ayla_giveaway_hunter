@@ -78,11 +78,14 @@ async def handle(client,update):
             await respond(client,chat_id,'Доступ закрито. Для налаштування власник може використати Telegram user ID: '+str(user_id))
         return
     if widget_query:
-        from app.widget import toggle_task, dashboard_action, dashboard_state
+        from app.widget import toggle_task, dashboard_action, dashboard_state, set_widget_status
         data=widget_query.get('data','')
         if re.fullmatch(r't:[0-9]{1,12}',data):
             result=toggle_task(int(data[2:]))
-        elif re.fullmatch(r'(list:[0-3]:[0-9]{1,4}|[ar]:[0-9]{1,12}:[0-3]:[0-9]{1,4})',data):
+        elif re.fullmatch(r's:[0-9]{1,12}:(ENTERED|WON|LOST)',data):
+            _,gid,status=data.split(':')
+            result=set_widget_status(int(gid),status)
+        elif re.fullmatch(r'(list:[0-3]:[0-9]{1,4}|[arewl]:[0-9]{1,12}:[0-3]:[0-9]{1,4})',data):
             result=dashboard_action(data)
         elif re.fullmatch(r'(text|url):[0-9]{1,12}:[0-3]:[0-9]{1,4}',data):
             kind,gid,tab,page=data.split(':');gid=int(gid)

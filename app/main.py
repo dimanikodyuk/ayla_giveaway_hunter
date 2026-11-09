@@ -77,10 +77,16 @@ def init_db():
         for name,typ in [('entry_cost',"TEXT DEFAULT 'unknown'"),('linked_giveaway_id','INTEGER'),('dedup_reason','TEXT'),('telegram_metadata','TEXT')]:
             if name not in cols:c.execute(f'ALTER TABLE giveaways ADD COLUMN {name} {typ}')
         c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(4,?)',(now(),))
+        c.execute('''CREATE TABLE IF NOT EXISTS participation_audit (
+            id INTEGER PRIMARY KEY, giveaway_id INTEGER NOT NULL,
+            old_status TEXT, new_status TEXT NOT NULL,
+            actor TEXT NOT NULL, changed_at TEXT NOT NULL)''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_participation_audit_gid ON participation_audit(giveaway_id,id)')
+        c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(5,?)',(now(),))
 @asynccontextmanager
 async def lifespan(app):
     init_db();yield
-app=FastAPI(title='Ayla Giveaway Hunter',version='3.0.0',lifespan=lifespan)
+app=FastAPI(title='Ayla Giveaway Hunter',version='3.1.0',lifespan=lifespan)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 def auth(request:Request,x_admin_token:Optional[str]=Header(default=None)):
     if AUTH_MODE=='local':
@@ -125,7 +131,7 @@ class ProgressIn(BaseModel):completed:bool
 @app.get('/')
 def index():return FileResponse(ROOT/'app'/'static'/'index.html')
 @app.get('/api/health')
-def health():return {'status':'ok','version':'3.0.0'}
+def health():return {'status':'ok','version':'3.1.0'}
 @app.get('/api/config')
 def config(request:Request):
     try:local=ipaddress.ip_address(request.client.host).is_loopback
@@ -217,13 +223,33 @@ def progress(task_id:int,data:ProgressIn):
         c.execute('INSERT INTO task_progress(task_id,completed,completed_at) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET completed=excluded.completed,completed_at=excluded.completed_at',(task_id,int(data.completed),now() if data.completed else None))
         return {'ok':True}
 ALLOWED={'NEW','IN_PROGRESS','ENTERED','AWAITING_RESULT','WON','LOST','UNKNOWN','SKIPPED','DISQUALIFIED','EXPIRED'}
+def set_participation_status(c,gid:int,new_status:str,actor:str='manual'):
+    if new_status not in ALLOWED:raise ValueError('Invalid status')
+    old=c.execute('SELECT status FROM participations WHERE giveaway_id=?',(gid,)).fetchone()
+    if not old:return False
+    if old['status']!=new_status:
+        stamp=now()
+        c.execute('UPDATE participations SET status=?,updated_at=? WHERE giveaway_id=?',(new_status,stamp,gid))
+        c.execute('INSERT INTO participation_audit(giveaway_id,old_status,new_status,actor,changed_at) VALUES(?,?,?,?,?)',
+                  (gid,old['status'],new_status,actor,stamp))
+        if new_status in ('WON','LOST'):
+            c.execute("UPDATE notification_outbox SET status='CANCELLED' WHERE giveaway_id=? AND status='PENDING' AND event_key LIKE 'result:%'",(gid,))
+    return True
+
 @app.patch('/api/giveaways/{gid}/status',dependencies=[Depends(auth)])
 def status(gid:int,data:StatusIn):
     if data.status not in ALLOWED:raise HTTPException(422,'Invalid status')
     with conn() as c:
-        r=c.execute('UPDATE participations SET status=?,updated_at=? WHERE giveaway_id=?',(data.status,now(),gid))
-        if not r.rowcount:raise HTTPException(404,'Giveaway not found')
+        if not set_participation_status(c,gid,data.status,'web'):
+            raise HTTPException(404,'Giveaway not found')
         return {'ok':True}
+
+@app.get('/api/giveaways/{gid}/participation-history',dependencies=[Depends(auth)])
+def participation_history(gid:int):
+    with conn() as c:
+        if not c.execute('SELECT 1 FROM giveaways WHERE id=?',(gid,)).fetchone():
+            raise HTTPException(404,'Giveaway not found')
+        return [dict(r) for r in c.execute('SELECT old_status,new_status,actor,changed_at FROM participation_audit WHERE giveaway_id=? ORDER BY id DESC',(gid,))]
 @app.patch('/api/giveaways/{gid}/review',dependencies=[Depends(auth)])
 def review(gid:int,data:dict):
     st=data.get('status')
