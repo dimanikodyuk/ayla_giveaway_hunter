@@ -62,7 +62,7 @@ def dashboard_state(tab=0,page=0):
             rows=c.execute('SELECT s.title,COUNT(DISTINCT g.id) cnt FROM sources s LEFT JOIN raw_items r ON r.source_id=s.id LEFT JOIN giveaways g ON g.raw_item_id=r.id GROUP BY s.id ORDER BY cnt DESC,s.id LIMIT 2 OFFSET ?', (page*2,)).fetchall()
             return {'n':n,'p':p,'e':e,'total':total,'rows':[{'t':r['title'][:50],'info':'Знайдено: '+str(r['cnt'])} for r in rows]}
         total=c.execute('SELECT COUNT(*) '+base+where).fetchone()[0]
-        order='CASE WHEN COALESCE(g.deadline_at,g.winner_at) IS NULL THEN 1 ELSE 0 END, COALESCE(g.deadline_at,g.winner_at) ASC, g.id DESC' if tab==0 else ('CASE WHEN COALESCE(g.winner_at,g.deadline_at) IS NULL THEN 1 ELSE 0 END, COALESCE(g.winner_at,g.deadline_at) ASC, g.id DESC' if tab==2 else 'g.id DESC')
+        order='CASE WHEN COALESCE(g.deadline_at,g.winner_at) IS NULL THEN 1 ELSE 0 END, COALESCE(g.winner_at,g.deadline_at) ASC, g.id DESC' if tab==0 else ('CASE WHEN COALESCE(g.winner_at,g.deadline_at) IS NULL THEN 1 ELSE 0 END, COALESCE(g.winner_at,g.deadline_at) ASC, g.id DESC' if tab==2 else 'g.id DESC')
         rows=c.execute("SELECT g.*,p.status,COALESCE(g.original_text,r.raw_text,'') AS content,(SELECT COUNT(*) FROM tasks t WHERE t.giveaway_id=g.id) AS task_count "+base+" LEFT JOIN raw_items r ON r.id=g.raw_item_id "+where+' ORDER BY '+order+' LIMIT 2 OFFSET ?', (page*2,)).fetchall()
     labels={'NEW':'Новий','IN_PROGRESS':'Виконую умови','ENTERED':'Беру участь',
       'AWAITING_RESULT':'Очікую результат','WON':'Переміг','LOST':'Не виграв',

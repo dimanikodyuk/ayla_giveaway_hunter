@@ -98,7 +98,7 @@ def init_db():
 @asynccontextmanager
 async def lifespan(app):
     init_db();yield
-app=FastAPI(title='Ayla Giveaway Hunter',version='3.2.0',lifespan=lifespan)
+app=FastAPI(title='Ayla Giveaway Hunter',version='3.4.0',lifespan=lifespan)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 def auth(request:Request,x_admin_token:Optional[str]=Header(default=None)):
     if AUTH_MODE=='local':
@@ -143,7 +143,7 @@ class ProgressIn(BaseModel):completed:bool
 @app.get('/')
 def index():return FileResponse(ROOT/'app'/'static'/'index.html')
 @app.get('/api/health')
-def health():return {'status':'ok','version':'3.2.0'}
+def health():return {'status':'ok','version':'3.4.0'}
 @app.get('/api/config')
 def config(request:Request):
     try:local=ipaddress.ip_address(request.client.host).is_loopback
@@ -461,6 +461,64 @@ def intelligence_analytics():
                 'win_rate_note':'Частка WON серед WON+LOST, а не шанс виграшу. Автоматичні LOST можуть бути непідтвердженими.',
                 'automatic_lost_events':automatic,'participation_status':by_status,
                 'review_status':by_review,'sources':by_source}
+
+
+@app.get('/api/intelligence/calendar',dependencies=[Depends(auth)])
+def smart_calendar(days:int=45):
+    """Read-only Kyiv calendar. Unknown dates are never invented."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    days=max(1,min(days,180))
+    today=datetime.now(ZoneInfo('Europe/Kyiv'))
+    end=today+timedelta(days=days)
+    events=[]
+    with conn() as c:
+        rows=c.execute("""SELECT g.id,g.title,g.source_url,g.deadline_at,g.winner_at,
+            COALESCE(p.status,'NEW') AS status,g.review_status
+            FROM giveaways g LEFT JOIN participations p ON p.giveaway_id=g.id
+            WHERE g.review_status!='REJECTED' AND g.linked_giveaway_id IS NULL
+              AND (g.deadline_at IS NOT NULL OR g.winner_at IS NOT NULL)""").fetchall()
+    for row in rows:
+        for kind,col in (('deadline','deadline_at'),('winner','winner_at')):
+            raw=row[col]
+            if not raw:continue
+            try:
+                dt=datetime.fromisoformat(str(raw).replace('Z','+00:00'))
+                if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
+                local=dt.astimezone(ZoneInfo('Europe/Kyiv'))
+            except (ValueError,TypeError,OverflowError):continue
+            if today-timedelta(days=1) <= local <= end:
+                events.append({'id':row['id'],'title':row['title'],'url':row['source_url'],
+                    'kind':kind,'at':local.isoformat(),'date':local.date().isoformat(),
+                    'status':row['status'],'past':local<today})
+    events.sort(key=lambda x:(x['at'],x['id'],x['kind']))
+    return {'timezone':'Europe/Kyiv','days':days,'events':events[:1000],
+            'note':'Дати беруться з winner_at та deadline_at; це не підтвердження результатів.'}
+
+@app.get('/api/intelligence/insights',dependencies=[Depends(auth)])
+def giveaway_insights():
+    """Explainable ranking and uncertainty, not estimated winning odds."""
+    from app.intelligence import giveaway_score
+    with conn() as c:
+        rows=c.execute("""SELECT g.*,COALESCE(g.original_text,r.raw_text,'') AS content,
+            (SELECT COUNT(*) FROM tasks t WHERE t.giveaway_id=g.id) AS task_count,
+            COALESCE(p.status,'NEW') AS participation_status
+            FROM giveaways g LEFT JOIN raw_items r ON r.id=g.raw_item_id
+            LEFT JOIN participations p ON p.giveaway_id=g.id
+            WHERE g.review_status!='REJECTED' AND g.linked_giveaway_id IS NULL
+            ORDER BY g.id DESC LIMIT 300""").fetchall()
+    out=[]
+    for r in rows:
+        score=giveaway_score(dict(r),r['content'])
+        missing=[key for key in ('winner_at','deadline_at') if not r[key]]
+        if r['entry_cost'] in (None,'unknown'):missing.append('entry_cost')
+        if not r['content']:missing.append('original_text')
+        out.append({'id':r['id'],'title':r['title'],'score':score['score'],
+            'label':score['label'],'reasons':score['reasons'],
+            'signals':score['scam']['signals'],'missing':missing,
+            'confidence':'limited' if missing else 'rule_based',
+            'is_win_probability':False,'status':r['participation_status']})
+    return sorted(out,key=lambda x:(-x['score'],x['id']))
 
 @app.get('/api/diagnostics',dependencies=[Depends(auth)])
 def diagnostics():
