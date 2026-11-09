@@ -55,6 +55,8 @@ def record(sid,external_id,text,url,published_at=None,native=False,metadata=None
                     WHERE source_url=? AND native_giveaway=1''',
                     (serialize(metadata), metadata.get('until_date'), url))
             return False
+        from app.main import collect_channel_mentions
+        collect_channel_mentions(c,cur.lastrowid,text)
         if native and is_ended(metadata): return False
         if not info['candidate']:return False
         expired=historical_reason(info,published_at,native=native)

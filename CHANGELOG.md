@@ -1,51 +1,21 @@
-# Ayla Giveaway Hunter — журнал змін
+# Ayla Giveaway Hunter v3.2 — Smart Discovery (patch)
 
-## v3.0 — Raspberry Pi Edition (2026-11-09)
-- Інсталятор systemd для Raspberry Pi OS / Debian.
-- Безпечне онлайн-резервування SQLite через SQLite Backup API; перевірка цілісності та захищене від випадкового перезапису відновлення.
-- Єдина актуальна інструкція `README.md`.
-- Автоматичний перезапуск сервісу після збою/втрати живлення (після завантаження ОС).
-- Щоденний резервний запуск через systemd timer — опційно.
-- Без зміни існуючої схеми SQLite, секретів та логіки Telegram Dashboard v2.4.
+## Changes
+- `app/intelligence.py`: explainable 0–100 priority score and text-based scam warning signals. Not an AI model or probability of winning.
+- `app/main.py`: additive SQLite schema migration v6, protected intelligence endpoints, analytics, manual channel candidate approval.
+- `app/collector.py`: extracts public Telegram channel references from newly archived messages, including messages not classified as giveaways. Does not auto-join channels.
+- `app/static/index.html`: Intelligence dashboard, risk signals, scores and manual channel review.
 
-## v2.4
-- Покращення контрастності Telegram Dashboard.
+## Deployment (Raspberry Pi)
+1. Back up SQLite using `sqlite3.Connection.backup()` or stop the service and copy the DB with its WAL files. Do not overwrite `.env`, `data/` or session files.
+2. Stop `ayla-giveaway.service` (and any separately running collector service).
+3. Unzip this patch into `/home/pi/ayla_giveaway_hunter` preserving relative paths.
+4. Start services; inspect `journalctl -u ayla-giveaway.service -n 100 --no-pager`.
+5. Open web panel, choose **Аналітика й AI Score**.
+6. Channel discovery starts collecting evidence from NEW messages. Click **Знайти канали у старих повідомленнях** to scan the latest 5000 archived items without duplicate evidence.
 
-## v2.2–v2.3
-- Метадані Telegram Giveaway та українські статуси віджета.
-
-## v1.9–v2.1
-- Тихі сповіщення та інтерактивний Telegram Dashboard.
-
-## v3.1
-- Host/port read from .env; updated example.
-- Widget WON/LOST/ENTERED actions and persistent audit.
-- Durable 24-hour auto-LOST and Telegram result reminder outbox.
-- Lifecycle worker with restart/retry; browser session auth survives F5.
-
----
-# Ayla Giveaway Hunter v3.1 — patch
-
-Only modified/new files. Does not contain `.env`, SQLite databases or Telegram sessions.
-
-## Deploy
-
-1. **Stop service:** `sudo systemctl stop ayla-giveaway.service`
-2. **Back up DB** before copying: `mkdir -p ~/ayla-backups && cp -a ~/ayla_giveaway_hunter/data/giveaways.sqlite3 ~/ayla-backups/giveaways-before-v31.sqlite3` (stop service first).
-3. Unzip this patch into `/home/pi/ayla_giveaway_hunter`, preserving relative paths. Do not replace `.env` or `data/`.
-4. Check `.env`: `HOST=0.0.0.0`, `PORT=8093`, `ENABLE_BOT=true`, `TG_BOT_ALLOWED_USER_IDS=...`. Keep secrets private.
-5. `sudo systemctl start ayla-giveaway.service` then `sudo journalctl -u ayla-giveaway.service -n 70 --no-pager`.
-6. Hard refresh browser (Ctrl+F5), sign in once. F5 should preserve auth within tab session.
-
-## Behavior
-
-- Only `ENTERED` and `AWAITING_RESULT` records with timezone-aware `winner_at` auto-close to `LOST` at `winner_at + 24 hours`. Existing `WON`/`LOST` statuses are never overwritten automatically.
-- Telegram result reminder is queued between `winner_at` and `winner_at + 24 hours` (one per owner and winner timestamp); delivery uses the existing outbox and requires the Telegram bot to be enabled. If the device was offline the entire window, it closes the entry on recovery without a stale reminder.
-- History is in `participation_audit`; old statuses are retained, and manual correction remains possible. API: `/api/giveaways/{id}/participation-history`.
-- Lifecycle runs every 60s independent of Telegram bot; errors are logged and retried. SQLite WAL and FULL sync remain enabled.
-- Telegram widgets depend on Telegram client support for `widget_query`.
-- `sessionStorage` survives F5 but is accessible to same-origin JavaScript; only use this private UI on trusted devices.
-
-## Note
-
-`winner_at` is interpreted as an absolute timestamp with explicit UTC offset. A naive date is skipped for safety. A date edit changes future closure timing.
+## Limitations
+- Heuristic rules only; no external LLM/API calls. Scores do not measure win odds.
+- Discovery only from public t.me/telegram.me links in collected message text; channel links inside message IDs are ignored.
+- New approved channels are created DISABLED until explicitly enabled. No automatic joins, no auto-participation.
+- Scam detector signals are advisory; do not share Telegram login codes, seed phrases or pay unverified prize fees.

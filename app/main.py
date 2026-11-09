@@ -83,10 +83,22 @@ def init_db():
             actor TEXT NOT NULL, changed_at TEXT NOT NULL)''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_participation_audit_gid ON participation_audit(giveaway_id,id)')
         c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(5,?)',(now(),))
+        c.execute("""CREATE TABLE IF NOT EXISTS discovered_channels (
+            username TEXT PRIMARY KEY COLLATE NOCASE,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+            mentions INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')),
+            reviewed_at TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS channel_evidence (
+            username TEXT NOT NULL COLLATE NOCASE REFERENCES discovered_channels(username),
+            raw_item_id INTEGER NOT NULL REFERENCES raw_items(id),
+            PRIMARY KEY(username,raw_item_id))""")
+        c.execute('CREATE INDEX IF NOT EXISTS idx_discovery_status ON discovered_channels(status,mentions DESC)')
+        c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(6,?)',(now(),))
 @asynccontextmanager
 async def lifespan(app):
     init_db();yield
-app=FastAPI(title='Ayla Giveaway Hunter',version='3.1.0',lifespan=lifespan)
+app=FastAPI(title='Ayla Giveaway Hunter',version='3.2.0',lifespan=lifespan)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 def auth(request:Request,x_admin_token:Optional[str]=Header(default=None)):
     if AUTH_MODE=='local':
@@ -131,7 +143,7 @@ class ProgressIn(BaseModel):completed:bool
 @app.get('/')
 def index():return FileResponse(ROOT/'app'/'static'/'index.html')
 @app.get('/api/health')
-def health():return {'status':'ok','version':'3.1.0'}
+def health():return {'status':'ok','version':'3.2.0'}
 @app.get('/api/config')
 def config(request:Request):
     try:local=ipaddress.ip_address(request.client.host).is_loopback
@@ -363,6 +375,92 @@ async def test_scan_sources():
         save_run(source['id'],started,count,error)
         output.append({'source':source['title'],'new_candidates':count,'status':'ERROR' if error else 'OK','error':error})
     return {'results':output,'note':'Кількість нових кандидатів, а не всіх повідомлень. Повторне сканування не дублює raw_items.'}
+
+# v3.2 Intelligence: deterministic scoring, conservative discovery, and aggregates.
+from app.intelligence import giveaway_score, channel_mentions
+
+def collect_channel_mentions(c, raw_item_id, text):
+    """Called only for newly archived posts, inside the same DB transaction."""
+    usernames = channel_mentions(text)
+    if not usernames: return
+    existing = {urlparse(r['url']).path.strip('/').split('/')[0].lower()
+                for r in c.execute("SELECT url FROM sources WHERE type='telegram'")}
+    for username in usernames - existing:
+        c.execute("""INSERT INTO discovered_channels(username,first_seen_at,last_seen_at)
+                     VALUES(?,?,?) ON CONFLICT(username) DO UPDATE SET last_seen_at=excluded.last_seen_at""",
+                  (username,now(),now()))
+        inserted = c.execute('INSERT OR IGNORE INTO channel_evidence(username,raw_item_id) VALUES(?,?)',
+                             (username,raw_item_id)).rowcount
+        if inserted:
+            c.execute('UPDATE discovered_channels SET mentions=mentions+1 WHERE username=?',(username,))
+
+@app.get('/api/intelligence/scores',dependencies=[Depends(auth)])
+def intelligence_scores():
+    with conn() as c:
+        rows=c.execute("""SELECT g.*,COALESCE(g.original_text,r.raw_text,'') AS content,
+            (SELECT COUNT(*) FROM tasks t WHERE t.giveaway_id=g.id) AS task_count
+            FROM giveaways g LEFT JOIN raw_items r ON r.id=g.raw_item_id ORDER BY g.id DESC LIMIT 1000""").fetchall()
+        return [{'id':r['id'],**giveaway_score(dict(r),r['content'])} for r in rows]
+
+@app.post('/api/intelligence/discovery/backfill',dependencies=[Depends(auth)])
+def backfill_discovery():
+    """Idempotent archive scan; bounded to prevent long HTTP requests on Pi 4."""
+    processed=0
+    with conn() as c:
+        # No expensive Telegram requests; only locally archived text.
+        rows=c.execute("""SELECT id,raw_text FROM raw_items
+            ORDER BY id DESC LIMIT 5000""").fetchall()
+        for row in rows:
+            collect_channel_mentions(c,row['id'],row['raw_text'])
+            processed+=1
+    return {'processed':processed,'note':'Останні 5000 архівованих повідомлень; повторний запуск не дублює згадки'}
+
+@app.get('/api/intelligence/discovery',dependencies=[Depends(auth)])
+def intelligence_discovery():
+    with conn() as c:
+        return [dict(r) for r in c.execute("""SELECT d.username,d.mentions,d.status,d.first_seen_at,d.last_seen_at,
+            (SELECT COUNT(DISTINCT ri.source_id) FROM channel_evidence e JOIN raw_items ri ON ri.id=e.raw_item_id WHERE e.username=d.username) AS source_count
+            FROM discovered_channels d ORDER BY (d.status='PENDING') DESC,d.mentions DESC,d.last_seen_at DESC LIMIT 300""")]
+
+class DiscoveryReview(BaseModel):
+    action:str=Field(pattern='^(approve|reject)$')
+
+@app.post('/api/intelligence/discovery/{username}/review',dependencies=[Depends(auth)])
+def review_discovery(username:str,data:DiscoveryReview):
+    import re
+    if not re.fullmatch(r'[a-z][a-z0-9_]{4,31}',username,re.I):raise HTTPException(422,'Invalid username')
+    with conn() as c:
+        row=c.execute('SELECT * FROM discovered_channels WHERE username=?',(username,)).fetchone()
+        if not row:raise HTTPException(404,'Candidate not found')
+        if data.action=='approve':
+            url='https://t.me/'+row['username']
+            if not c.execute("SELECT 1 FROM sources WHERE type='telegram' AND lower(rtrim(url,'/'))=?",(url.lower(),)).fetchone():
+                c.execute('INSERT INTO sources(type,title,url,enabled) VALUES(?,?,?,0)',('telegram','@'+row['username'],url))
+            # Approved sources are created DISABLED: explicit enable is required.
+        c.execute('UPDATE discovered_channels SET status=?,reviewed_at=? WHERE username=?',
+                  ('APPROVED' if data.action=='approve' else 'REJECTED',now(),username))
+    return {'ok':True,'source_created_disabled':data.action=='approve'}
+
+@app.get('/api/intelligence/analytics',dependencies=[Depends(auth)])
+def intelligence_analytics():
+    with conn() as c:
+        by_status=[dict(r) for r in c.execute('SELECT status,COUNT(*) AS count FROM participations GROUP BY status ORDER BY count DESC')]
+        by_review=[dict(r) for r in c.execute('SELECT review_status AS status,COUNT(*) AS count FROM giveaways GROUP BY review_status')]
+        by_source=[dict(r) for r in c.execute("""SELECT s.id,s.title,COUNT(DISTINCT r.id) AS scanned,
+            COUNT(DISTINCT g.id) AS giveaways,
+            COUNT(DISTINCT CASE WHEN g.review_status='APPROVED' THEN g.id END) AS approved
+            FROM sources s LEFT JOIN raw_items r ON r.source_id=s.id
+            LEFT JOIN giveaways g ON g.raw_item_id=r.id GROUP BY s.id ORDER BY giveaways DESC LIMIT 30""")]
+        total=c.execute('SELECT COUNT(*) FROM giveaways').fetchone()[0]
+        entered=c.execute("SELECT COUNT(*) FROM participations WHERE status IN ('ENTERED','AWAITING_RESULT','WON','LOST')").fetchone()[0]
+        won=c.execute("SELECT COUNT(*) FROM participations WHERE status='WON'").fetchone()[0]
+        lost=c.execute("SELECT COUNT(*) FROM participations WHERE status='LOST'").fetchone()[0]
+        automatic=c.execute("SELECT COUNT(*) FROM participation_audit WHERE new_status='LOST' AND actor != 'manual' AND actor != 'web'").fetchone()[0]
+        return {'total':total,'participated':entered,'won':won,'lost':lost,
+                'confirmed_win_rate_pct':round(100*won/(won+lost),2) if won+lost else None,
+                'win_rate_note':'Частка WON серед WON+LOST, а не шанс виграшу. Автоматичні LOST можуть бути непідтвердженими.',
+                'automatic_lost_events':automatic,'participation_status':by_status,
+                'review_status':by_review,'sources':by_source}
 
 @app.get('/api/diagnostics',dependencies=[Depends(auth)])
 def diagnostics():
