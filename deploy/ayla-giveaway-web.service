@@ -1,0 +1,14 @@
+[Unit]
+Description=Ayla Giveaway Hunter Web
+After=network.target
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ayla_giveaway_hunter
+EnvironmentFile=/home/pi/ayla_giveaway_hunter/.env
+ExecStart=/home/pi/ayla_giveaway_hunter/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8093
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target

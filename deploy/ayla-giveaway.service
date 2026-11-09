@@ -1,0 +1,14 @@
+[Unit]
+Description=Ayla Giveaway Hunter v1.1
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ayla_giveaway_hunter
+ExecStart=/home/pi/ayla_giveaway_hunter/.venv/bin/python /home/pi/ayla_giveaway_hunter/app/launcher.py
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target

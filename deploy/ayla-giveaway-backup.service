@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Ayla Giveaway Hunter SQLite database
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/ayla_giveaway_hunter
+ExecStart=/home/pi/ayla_giveaway_hunter/.venv/bin/python /home/pi/ayla_giveaway_hunter/scripts/db_maintenance.py backup
+UMask=0077
