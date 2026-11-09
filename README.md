@@ -1,21 +1,25 @@
-# Ayla Giveaway Hunter v3.2.1 — AI Score navigation
+# Ayla Giveaway Hunter — Telegram widget dashboard hotfix (v3.2.2)
 
-Патч поверх **v3.2**. Тільки змінені файли, без `.env`, сесій та SQLite.
+Only changed code: `app/widget.py`. Does not include `.env`, SQLite, Telegram session, or credentials.
 
-- У вкладці «Аналітика й AI Score» кожна оцінка має кнопку «Перейти до розіграшу», яка відкриває деталі запису.
-- У каталозі та картці деталей показується AI Score без необхідності спершу відкривати вкладку аналітики.
-- Окремий Telegram widget-sandbox показує бал і має кнопку переходу до оригіналу (бот надсилає посилання в особистий чат через наявний обробник `url:`).
-- Telegram dashboard widget-sandbox показує AI Score поруч із назвою кожного розіграшу; кнопка «Оригінал» уже існувала.
-- Оцінка — евристичний пріоритет, а не ймовірність виграшу.
+## Changes
+- Participation: server-side paging, 2 giveaways per page; navigation above and below cards (previous/next, current page / total).
+- Dates: distinct chronological event timeline (winner announcement date first, otherwise deadline), with compact cards and original link; no duplicate participation action buttons.
+- Both tabs show AI Score.
+- Telegram widget HTML and compressed HTML remain within size limits.
 
-## Установка
+## Install on Raspberry Pi
+1. Back up `app/widget.py` and the database (recommended).
+2. `sudo systemctl stop ayla-giveaway.service`
+3. Extract ZIP **in** `/home/pi/ayla_giveaway_hunter/` preserving paths (do not replace database or .env).
+4. `sudo systemctl start ayla-giveaway.service`
+5. `sudo journalctl -u ayla-giveaway.service -n 50 --no-pager`
+6. Send `/dashboard` to the Telegram bot to create a **new** widget. Old sent widgets may retain old HTML.
 
-```bash
-sudo systemctl stop ayla-giveaway.service
-cd ~/ayla_giveaway_hunter
-unzip -o /шлях/до/Ayla_Giveaway_Hunter_v3.2.1_PATCH.zip
-sudo systemctl start ayla-giveaway.service
-sudo journalctl -u ayla-giveaway.service -n 50 --no-pager
-```
+## Checks performed
+- Python `py_compile` passed.
+- JavaScript `node --check` passed.
+- Dashboard HTML 7.6 KB, zlib compressed 2.85 KB (limits 32 KB / 4 KB).
+- SQLite mock tests: 7 entries, 2 rows per page, 4 pages, distinct date labels; widget JSON response below 1024 bytes.
 
-Перезавантаж вебсторінку Ctrl+F5. Для Telegram створи новий widget командою `/widget ID` або `/dashboard`, щоб застосувати оновлений HTML.
+Not included: Telegram FloodWait protections (planned separate v3.3).
